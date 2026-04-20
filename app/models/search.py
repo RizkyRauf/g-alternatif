@@ -9,7 +9,6 @@ class SearchResult(BaseModel):
     domain: str = Field("", description="Nama domain sumber")
     content: str = Field("", description="Snippet/deskripsi konten")
     engine: str = Field("unknown", description="Search engine sumber")
-    published_date: Optional[str] = Field(None, description="Tanggal publikasi (jika ada)")
 
     class Config:
         json_schema_extra = {
@@ -19,7 +18,6 @@ class SearchResult(BaseModel):
                 "domain": "example.com",
                 "content": "Ini adalah cuplikan konten dari artikel...",
                 "engine": "google",
-                "published_date": "2024-01-15"
             }
         }
 
