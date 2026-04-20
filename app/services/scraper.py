@@ -1,31 +1,19 @@
-# app/services/scraper.py
-"""
-Scraper service menggunakan SeleniumBase CDP Mode + Playwright
-Kompatibel dengan FastAPI + uvloop via ProcessPoolExecutor
-Sesuai dokumentasi: https://seleniumbase.io/examples/cdp_mode/playwright/ReadMe/
-"""
-
-from seleniumbase import SB
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
 import time
 import random
 import logging
+import os
 from typing import List
-
+from bs4 import BeautifulSoup
+from seleniumbase import SB
 from app.core.config import settings
-from app.models.search import SearchResult
-from fake_useragent import UserAgent
+
+from app.core.logging_config import setup_logging
+
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
-def get_random_user_agent():
-    ua = UserAgent(platforms='desktop')
-    return ua.random
-
-
 def build_params(query: str, page_no: int, category: str = "general") -> dict:
-    """Bangun parameter pencarian SearX dengan kategori dinamis"""
     return {
         "q": query,
         "language": "id-ID",
@@ -36,117 +24,117 @@ def build_params(query: str, page_no: int, category: str = "general") -> dict:
     }
 
 def build_url(query: str, page_no: int, category: str = "general") -> str:
-    """Bangun URL lengkap dengan query string"""
     params = build_params(query, page_no, category)
     query_string = "&".join(f"{k}={v}" for k, v in params.items())
     return f"{settings.BASE_URL}?{query_string}"
 
-
-def extract_results(html: str) -> List[SearchResult]:
-    """
-    Ekstrak hasil pencarian dari HTML SearX menggunakan BeautifulSoup
-    """
+def extract_results(html: str, page_number: int, worker_id: int = 0) -> List[dict]:
     results = []
     soup = BeautifulSoup(html, 'lxml')
-    
-    articles = soup.select("article.result")
-    logger.debug(f"Ditemukan {len(articles)} artikel dalam HTML")
-    
-    for article in articles:
+
+    for article in soup.select("article.result"):
         try:
             title_el = article.select_one("h3 a")
             title = title_el.get_text(strip=True) if title_el else ""
             url = title_el.get("href") if title_el else ""
-            
+
             domain_el = article.select_one("span.url_i1")
             domain = domain_el.get_text(strip=True) if domain_el else ""
-            
+
             content_el = article.select_one("p.content")
             content = ""
             if content_el:
                 for span in content_el.select("span.highlight"):
                     span.unwrap()
                 content = content_el.get_text(strip=True)
-            
+
             engine_el = article.select_one("div.engines span:first-child")
             engine = engine_el.get_text(strip=True) if engine_el else "unknown"
-            
+
             if title or url:
-                results.append(SearchResult(
-                    title=title,
-                    url=url,
-                    domain=domain,
-                    content=content,
-                    engine=engine,
-                ))
-                
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "domain": domain,
+                    "content": content,
+                    "engine": engine,
+                    "page_number": page_number,
+                    "worker_id": worker_id,
+                    "scraped_at": time.strftime("%Y-%m-%dT%H:%M:%S")
+                })
         except Exception as e:
-            logger.warning(f"Parse error untuk satu artikel: {e}")
+            logger.warning(f"Parse error on page {page_number}: {e}")
             continue
-    
     return results
 
-
-def perform_search(query: str, max_pages: int = None, category: str = None) -> List[SearchResult]:
+def perform_search(query: str, max_pages: int = None, category: str = None, worker_id: int = 0) -> List[dict]:
     """
-    Main scraping function - sekarang mendukung parameter category
+    Fungsi scraping yang akan dipanggil oleh ProcessPoolExecutor.
+    PENTING: Setiap process akan memiliki browser instance sendiri yang terisolasi.
+    
+    Args:
+        query: Kata kunci pencarian
+        max_pages: Jumlah halaman yang akan di-scrape
+        category: Kategori pencarian (general, news, images, dll)
+        worker_id: ID worker untuk tracking
+    
+    Returns:
+        List hasil scraping dalam bentuk dictionary
     """
-    if max_pages is None:
-        max_pages = settings.DEFAULT_MAX_PAGES
-    if category is None:
-        category = settings.DEFAULT_CATEGORY
+    max_pages = max_pages or settings.DEFAULT_MAX_PAGES
+    category = category or settings.DEFAULT_CATEGORY
 
-    logger.info(f"Starting scraper: query='{query}', pages={max_pages}, category='{category}'")
-
+    pid = os.getpid()
+    logger.info(f"[PID {pid}] Starting scraper: query='{query}', pages={max_pages}, category='{category}'")
+    
     all_results = []
 
-    with SB(
-        uc=True,
-        agent=get_random_user_agent(),
-        headless2=settings.HEADLESS,
-        # headless=settings.HEADLESS,
-        block_images=settings.BLOCK_IMAGES,
-        disable_csp=settings.DISABLE_CSP,
-        disable_js=True,
-        incognito=True
-    ) as sb:
-        sb.activate_cdp_mode()
-        endpoint_url = sb.cdp.get_endpoint_url()
-        
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp(endpoint_url)
-            context = browser.contexts[0]
-            page = context.pages[0] if context.pages else context.new_page()
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ]
 
-            page.set_viewport_size({
-                "width": settings.VIEWPORT_WIDTH,
-                "height": settings.VIEWPORT_HEIGHT
-            })
-
+    try:
+        with SB(
+            uc=True,
+            headless2=settings.HEADLESS,
+            block_images=settings.BLOCK_IMAGES,
+            disable_csp=settings.DISABLE_CSP,
+            disable_js=False,
+            incognito=True,
+            chromium_arg=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                f"--user-agent={random.choice(user_agents)}"
+            ]
+        ) as sb:
             for page_no in range(1, max_pages + 1):
                 url = build_url(query, page_no, category)
-                logger.info(f"Page {page_no}/{max_pages}: {url[:100]}...")
+                logger.info(f"[PID {pid}] Page {page_no}/{max_pages}: {url[:80]}...")
 
                 try:
-                    page.goto(url, wait_until="networkidle", timeout=30000)
-                    page.wait_for_selector("article.result", timeout=20000)
-                    page.wait_for_timeout(1000)
+                    sb.open(url)
+                    sb.wait_for_element("article.result", timeout=25000)
+                    time.sleep(random.uniform(1.0, 2.0))
 
-                    html = page.content()
-                    page_results = extract_results(html)
+                    html = sb.get_page_source()
+                    page_results = extract_results(html, page_no, worker_id)
                     all_results.extend(page_results)
-
-                    logger.info(f"Page {page_no}: {len(page_results)} results | Total: {len(all_results)}")
+                    logger.info(f"[PID {pid}] Page {page_no}: {len(page_results)} results | Total: {len(all_results)}")
 
                 except Exception as e:
-                    logger.error(f"Error di page {page_no}: {e}", exc_info=True)
+                    logger.error(f"[PID {pid}] Error di page {page_no}: {e}", exc_info=True)
                     continue
 
                 if page_no < max_pages:
-                    delay = settings.BASE_DELAY + random.uniform(0.5, 2.0)
+                    delay = 2.0 + random.uniform(0.5, 1.5)
                     time.sleep(delay)
 
-            browser.close()
+    except Exception as e:
+        logger.error(f"[PID {pid}] Fatal error in scraper: {e}", exc_info=True)
+        raise
 
-    logger.info(f"Scraper completed: {len(all_results)} total results")
+    logger.info(f"[PID {pid}] Scraper completed: {len(all_results)} total results for '{query}'")
     return all_results
