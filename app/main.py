@@ -35,14 +35,12 @@ app = FastAPI(
 # Tambahkan CORS middleware (opsional, untuk frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Untuk production, ganti dengan domain spesifik
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ProcessPoolExecutor untuk menjalankan blocking scraper
-# Max workers sesuai resource server (1 worker ≈ 300-500MB RAM)
 executor = ProcessPoolExecutor(max_workers=settings.MAX_WORKERS)
 
 
@@ -81,70 +79,50 @@ async def health_check():
 
 @app.get("/search", response_model=SearchResponse, tags=["Search"])
 async def search(
-    q: str = Query(
-        ..., 
-        min_length=1, 
-        max_length=200, 
-        description="Kata kunci pencarian (query)"
-    ),
-    max_pages: int = Query(
-        settings.DEFAULT_MAX_PAGES, 
-        ge=1, 
-        le=10, 
-        description="Jumlah halaman maksimal untuk discrape (1-10)"
-    ),
-    lang: str = Query(
-        "id-ID",
-        description="Kode bahasa untuk hasil pencarian (contoh: id-ID, en-US)"
+    q: str = Query(..., min_length=1, max_length=200, description="Kata kunci pencarian"),
+    max_pages: int = Query(settings.DEFAULT_MAX_PAGES, ge=1, le=10, description="Jumlah halaman (1-10)"),
+    lang: str = Query("id-ID", description="Kode bahasa (contoh: id-ID, en-US)"),
+    category: str = Query(
+        settings.DEFAULT_CATEGORY,
+        description="Kategori pencarian SearX: general, news, images, videos, etc."
     )
 ):
-    """
-    Endpoint pencarian utama
-    
-    Melakukan scraping hasil pencarian dari SearX instance menggunakan
-    SeleniumBase + Playwright dalam mode stealth.
-    
-    Request ini bisa memakan waktu 10-60 detik tergantung jumlah halaman.
-    """
     start_time = time.time()
-    logger.info(f"Search request: q='{q}', pages={max_pages}, lang={lang}")
-    
+    logger.info(f"Search request: q='{q}', pages={max_pages}, lang={lang}, category={category}")
+
     try:
         loop = asyncio.get_running_loop()
-        
+
         results = await asyncio.wait_for(
             loop.run_in_executor(
-                executor, 
+                executor,
                 perform_search,
-                q, 
-                max_pages
+                q,
+                max_pages,
+                category
             ),
             timeout=settings.API_TIMEOUT
         )
-        
+
         elapsed = time.time() - start_time
-        logger.info(f"earch completed in {elapsed:.2f}s: {len(results)} results")
-        
+        logger.info(f"Search completed in {elapsed:.2f}s: {len(results)} results")
+
         return SearchResponse(
             query=q,
             total_results=len(results),
             results=results,
             pages_scraped=max_pages
         )
-        
+
     except asyncio.TimeoutError:
         logger.error(f"Timeout after {settings.API_TIMEOUT}s for query: '{q}'")
         raise HTTPException(
             status_code=504,
-            detail=f"Request timeout setelah {settings.API_TIMEOUT} detik. Coba kurangi max_pages."
+            detail=f"Request timeout setelah {settings.API_TIMEOUT} detik."
         )
-        
     except Exception as e:
         logger.error(f"Unexpected error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.get("/search/simple", tags=["Search"])
