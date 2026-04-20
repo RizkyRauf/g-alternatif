@@ -1,42 +1,48 @@
-# app/models/search.py
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 
-class SearchResult(BaseModel):
-    """Model untuk satu hasil pencarian"""
-    title: str = Field(..., description="Judul hasil pencarian")
-    url: str = Field(..., description="URL lengkap ke artikel")
-    domain: str = Field("", description="Nama domain sumber")
-    content: str = Field("", description="Snippet/deskripsi konten")
-    engine: str = Field("unknown", description="Search engine sumber")
+class SearchResultItem(BaseModel):
+    title: str
+    url: str
+    domain: str
+    content: str
+    engine: str
+    page_number: int
+    worker_id: int = 0
+    scraped_at: str
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "title": "Contoh Judul Berita",
-                "url": "https://example.com/artikel",
-                "domain": "example.com",
-                "content": "Ini adalah cuplikan konten dari artikel...",
-                "engine": "google",
-            }
-        }
+class SingleSearchResponse(BaseModel):
+    query: str
+    category: str
+    total_results: int
+    pages_scraped: int
+    results: List[SearchResultItem]
 
-class SearchResponse(BaseModel):
-    """Model response API pencarian"""
-    query: str = Field(..., description="Query pencarian yang digunakan")
-    total_results: int = Field(..., description="Jumlah total hasil yang ditemukan")
-    results: List[SearchResult] = Field(default_factory=list, description="Daftar hasil pencarian")
-    
-    # Optional fields untuk metadata
-    pages_scraped: Optional[int] = Field(None, description="Jumlah halaman yang discrape")
-    error: Optional[str] = Field(None, description="Pesan error jika ada")
+class BatchSearchRequest(BaseModel):
+    keywords: List[str] = Field(..., min_length=1, max_length=50)
+    max_pages: int = Field(2, ge=1, le=10)
+    category: str = Field("general")
+    concurrency: int = Field(3, ge=1, le=10)
+    lang: str = Field("id-ID")
+    skip_failed: bool = Field(True)
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "query": "pertamina",
-                "total_results": 15,
-                "results": [],
-                "pages_scraped": 3
-            }
-        }
+class KeywordResult(BaseModel):
+    keyword: str
+    status: Literal["success", "failed", "partial"]
+    results_count: int
+    results: List[SearchResultItem] = []
+    error: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    pages_scraped: Optional[int] = None
+
+class BatchSearchResponse(BaseModel):
+    request_id: str
+    total_keywords: int
+    successful: int
+    failed: int
+    partial: int
+    total_results: int
+    duration_seconds: float
+    started_at: str
+    completed_at: str
+    results: List[KeywordResult]
